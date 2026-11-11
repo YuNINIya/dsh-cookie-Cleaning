@@ -1,0 +1,18 @@
+# Bundle 补丁层：插入一行 Host 插件。
+# DSH 运行期间 cookie 库被桌面外壳独占，删不掉时自动转为「下次启动清零」。
+- insert:
+    - id: cookie-janitor
+      name: dsh-cookie-janitor
+      config:
+        # 每多少天清空一次；默认 7 天
+        intervalDays: 7
+        # 留空 = 自动定位 %APPDATA%\@deepseek-ai\dsh-desktop\Network
+        directory: ''
+        # 可清理的文件；只接受 Chrome cookie 库这几个名字
+        files:
+          - Cookies
+          - Cookies-journal
+        # 启动时若已超期，立刻补一次
+        runOnStart: true
+        # true = 只截断内容保留文件；false = 直接删文件（默认，启动窗口下可靠）
+        contentOnly: false
