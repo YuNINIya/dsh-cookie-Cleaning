@@ -23,7 +23,7 @@ import path from 'node:path'
 
 export const name = 'dsh-cookie-janitor'
 
-/** 依赖：定时器排期；tools 注册手动工具；subprocess 可选（兜底脚本）。 */
+/** 依赖：定时器排期；tools 注册工具；commands 注册斜杠命令（可选，缺失则跳过）。 */
 export const inject = ['timer', 'tools']
 
 /**
@@ -284,6 +284,20 @@ export function apply(ctx, config = {}) {
     return lines.join('\n')
   }
 
+  // 命令与工具共用同一份实现，避免两处逻辑漂移。
+  async function doRun(reason) {
+    const outcome = await runOnce(reason)
+    if (!outcome) return '清理正在进行中，稍后再试。'
+    if (outcome.needsDefer) {
+      await markPending('manual')
+      return `当场删除失败（${outcome.result.busy.map((b) => `${b.file}:${b.error}`).join(', ')}），已安排：下次进入 DSH 时清零。`
+    }
+    return `已清理：${[...outcome.result.removed, ...outcome.result.truncated].join(', ') || '无文件需要处理'}`
+  }
+  async function doCancel() {
+    return await clearPending() ? '已取消安排，下次启动不会清空 cookie 库。' : '当前没有待清理标记，无需取消。'
+  }
+
   ctx.tools?.register?.({
     name: 'cookie_janitor_run',
     description:
@@ -292,13 +306,7 @@ export function apply(ctx, config = {}) {
     parameters: { reason: { type: 'string', description: '本次清理的原因标记，仅写入状态文件。' } },
     output: reportOutput,
     async execute(args = {}) {
-      const outcome = await runOnce(String(args.reason || '手动'))
-      if (!outcome) return { report: '清理正在进行中，稍后再试。' }
-      if (outcome.needsDefer) {
-        await markPending('manual')
-        return { report: `当场删除失败（${outcome.result.busy.map((b) => `${b.file}:${b.error}`).join(', ')}），已安排：下次进入 DSH 时清零。` }
-      }
-      return { report: `已清理：${[...outcome.result.removed, ...outcome.result.truncated].join(', ') || '无文件需要处理'}` }
+      return { report: await doRun(String(args.reason || '手动')) }
     },
   })
 
@@ -308,8 +316,7 @@ export function apply(ctx, config = {}) {
     parameters: {},
     output: reportOutput,
     async execute() {
-      const removed = await clearPending()
-      return { report: removed ? '已取消安排，下次启动不会清空 cookie 库。' : '当前没有待清理标记，无需取消。' }
+      return { report: await doCancel() }
     },
   })
 
@@ -322,6 +329,28 @@ export function apply(ctx, config = {}) {
       return { report: await formatStatus() }
     },
   })
+
+  // ── 斜杠命令：会话输入框里直接敲，不经模型，等于一个"按钮" ──────────────
+  const commands = ctx.get?.('commands')
+  if (commands) {
+    ctx.effect?.(() => commands.register({
+      name: 'clean-cookies',
+      description: '立即清理 dsh-desktop 的 Cookies；删不掉时安排到下次启动清零',
+      handler: async () => ({ kind: 'success', text: await doRun('手动命令') }),
+    }), 'dsh-cookie-janitor: /clean-cookies')
+
+    ctx.effect?.(() => commands.register({
+      name: 'clean-cookies-cancel',
+      description: '取消已安排的 cookie 延期清理',
+      handler: async () => ({ kind: 'success', text: await doCancel() }),
+    }), 'dsh-cookie-janitor: /clean-cookies-cancel')
+
+    ctx.effect?.(() => commands.register({
+      name: 'clean-cookies-status',
+      description: '查看 cookie 清理状态',
+      handler: async () => ({ kind: 'success', text: await formatStatus() }),
+    }), 'dsh-cookie-janitor: /clean-cookies-status')
+  }
 }
 
 export const __internals = { sweep, normalize, defaultDirectory, COOKIE_FILES }
